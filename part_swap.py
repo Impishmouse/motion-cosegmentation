@@ -196,6 +196,38 @@ def make_video(swap_index, source_image, target_video, reconstruction_module, se
             predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
         return predictions
 
+def make_image(swap_index, source_image, target_image, reconstruction_module, segmentation_module, face_parser=None,
+               hard=False, use_source_segmentation=False, cpu=False):
+    assert type(swap_index) == list
+    with torch.no_grad():
+
+        source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+        if not cpu:
+            source = source.cuda()
+        seg_source = segmentation_module(source)
+
+        target = torch.tensor(target_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+        if not cpu:
+            target = target.cuda()
+        seg_target = segmentation_module(target)
+
+        # Computing blend mask
+        if face_parser is not None:
+            blend_mask = F.interpolate(source if use_source_segmentation else target, size=(512, 512))
+            blend_mask = (blend_mask - face_parser.mean) / face_parser.std
+            blend_mask = torch.softmax(face_parser(blend_mask)[0], dim=1)
+        else:
+            blend_mask = seg_source['segmentation'] if use_source_segmentation else seg_target['segmentation']
+
+        blend_mask = blend_mask[:, swap_index].sum(dim=1, keepdim=True)
+        if hard:
+            blend_mask = (blend_mask > 0.5).type(blend_mask.type())
+
+        out = reconstruction_module(source, target, seg_source=seg_source, seg_target=seg_target,
+                                    blend_mask=blend_mask, use_source_segmentation=use_source_segmentation)
+
+        return np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0]
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
